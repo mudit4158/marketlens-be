@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = ""
     cors_allowed_origin_regex: str | None = None
 
+    # API key — if set, every request must include X-API-Key: <value>.
+    # Leave empty in development (no enforcement). Set in production .env.app.
+    api_key: str = ""
+
     # Scheduler — cron fields for the periodic ingestion job (UTC).
     # Default: daily at 22:00 UTC (after US market close + 30-min buffer).
     scheduler_enabled: bool = True

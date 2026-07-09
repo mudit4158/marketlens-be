@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
@@ -34,6 +34,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next) -> Response:
+    """Enforce X-API-Key header when API_KEY is configured in settings.
+    /health is always exempt so load-balancer and uptime checks pass.
+    In development (API_KEY="") enforcement is skipped entirely.
+    """
+    if settings.api_key and request.url.path != "/health":
+        if request.headers.get("X-API-Key") != settings.api_key:
+            return Response(content='{"detail":"Forbidden"}', status_code=403,
+                            media_type="application/json")
+    return await call_next(request)
+
 
 app.include_router(instruments.router)
 app.include_router(prices.router)

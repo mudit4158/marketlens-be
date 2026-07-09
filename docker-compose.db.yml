@@ -61,6 +61,6 @@ services:
           aws s3 cp /tmp/$$BACKUP_FILE s3://$$S3_BUCKET/backups/$$BACKUP_FILE;
           echo \"[backup] Upload done: $$BACKUP_FILE\";
           rm /tmp/$$BACKUP_FILE;
-          sleep 86400;
+          sleep 604800;
         done
       "
