@@ -1,0 +1,10 @@
+.env
+.env.*
+*.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+nginx/certs/
