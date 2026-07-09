@@ -1,0 +1,21 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: marketlens-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: marketlens
+      POSTGRES_PASSWORD: marketlens
+      POSTGRES_DB: marketlens
+    ports:
+      - "5433:5432"
+    volumes:
+      - marketlens_timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketlens -d marketlens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  marketlens_timescaledb_data:

@@ -1,0 +1,39 @@
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # App
+    environment: str = "development"
+    log_level: str = "INFO"
+
+    # Database
+    database_url: str
+
+    # CORS — comma-separated exact origins; env vars are always strings, so avoid
+    # pydantic-settings' list-typed env parsing and split this ourselves in main.py.
+    cors_allowed_origins: str = ""
+    cors_allowed_origin_regex: str | None = None
+
+    # Scheduler — cron fields for the periodic ingestion job (UTC).
+    # Default: daily at 22:00 UTC (after US market close + 30-min buffer).
+    scheduler_enabled: bool = True
+    scheduler_cron_hour: str = "22"
+    scheduler_cron_minute: str = "0"
+    scheduler_cron_day_of_week: str = "mon-fri"  # weekdays only; set "*" for all days
+    # Comma-separated list of intervals to fetch on each scheduled run.
+    # yfinance caps: 1m→7d, 2m/5m/15m/30m/60m/90m→60d, 1h→730d, 1d/1wk/1mo→unlimited.
+    # The scheduler respects these caps automatically — no manual days config needed per interval.
+    scheduler_ingestion_intervals: str = "1d,1h,5m"
+    scheduler_source_name: str = "yfinance"
+
+    def parsed_intervals(self) -> list[str]:
+        return [i.strip() for i in self.scheduler_ingestion_intervals.split(",") if i.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

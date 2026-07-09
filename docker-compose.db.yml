@@ -1,0 +1,67 @@
+# ── DB SERVER docker-compose ─────────────────────────────────────────────────
+# Deploy on the DB server only.
+#
+# Pre-requisites on the DB server:
+#   1. Block storage volume attached and mounted at /mnt/db-volume
+#      (Hetzner: hcloud volume create --size 20 --name marketlens-db)
+#      (DigitalOcean: create a Block Storage volume in the same datacenter)
+#   2. mkdir -p /mnt/db-volume/pgdata
+#   3. Firewall: allow port 5432 only from the app server's private IP.
+#      Block all other inbound on 5432.
+#
+# Start: docker compose -f docker-compose.db.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: marketlens-timescaledb
+    restart: always                         # auto-restart on server reboot
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"                         # bind to all interfaces; firewall restricts access
+    volumes:
+      # Bind-mount to block storage — data survives container and server restarts.
+      # Change /mnt/db-volume/pgdata if your block storage is mounted elsewhere.
+      - /mnt/db-volume/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    shm_size: 256mb                         # recommended for Postgres under load
+
+  # Daily backup job — dumps the DB and uploads to S3-compatible object storage.
+  # Runs once a day at 02:00 UTC inside this compose stack.
+  db-backup:
+    image: postgres:16-alpine
+    container_name: marketlens-db-backup
+    restart: always
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_KEY}
+      AWS_DEFAULT_REGION: ${BACKUP_S3_REGION:-us-east-1}
+      S3_BUCKET: ${BACKUP_S3_BUCKET}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        apk add --no-cache aws-cli curl &&
+        while true; do
+          BACKUP_FILE=marketlens_$$(date +%Y%m%d_%H%M%S).sql.gz;
+          echo \"[backup] Starting dump: $$BACKUP_FILE\";
+          pg_dump -h timescaledb -U $$POSTGRES_USER $$POSTGRES_DB | gzip > /tmp/$$BACKUP_FILE;
+          aws s3 cp /tmp/$$BACKUP_FILE s3://$$S3_BUCKET/backups/$$BACKUP_FILE;
+          echo \"[backup] Upload done: $$BACKUP_FILE\";
+          rm /tmp/$$BACKUP_FILE;
+          sleep 86400;
+        done
+      "

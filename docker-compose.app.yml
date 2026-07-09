@@ -1,0 +1,62 @@
+# ── APP SERVER docker-compose ────────────────────────────────────────────────
+# Deploy on the app server only.
+#
+# Pre-requisites on the app server:
+#   1. Point your domain's A record to this server's public IP.
+#   2. Fill in .env.app (copy from .env.app.example).
+#   3. mkdir -p ./nginx/certs ./nginx/conf.d
+#
+# First run (get SSL cert):
+#   docker compose -f docker-compose.app.yml run --rm certbot
+# Then start everything:
+#   docker compose -f docker-compose.app.yml up -d
+#
+# Cert renewal (add to crontab: 0 3 * * * docker compose -f docker-compose.app.yml run --rm certbot):
+#   docker compose -f docker-compose.app.yml run --rm certbot
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: marketlens-api
+    restart: always
+    env_file: .env.app
+    expose:
+      - "8001"
+    depends_on:
+      - nginx
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    image: nginx:alpine
+    container_name: marketlens-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot:ro
+    depends_on: []
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: marketlens-certbot
+    volumes:
+      - ./nginx/certs:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    entrypoint: >
+      certbot certonly --webroot --webroot-path=/var/www/certbot
+      --email ${SSL_EMAIL} --agree-tos --no-eff-email
+      -d ${DOMAIN}
+
+volumes:
+  certbot-webroot:
