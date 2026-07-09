@@ -22,9 +22,11 @@ class Settings(BaseSettings):
     # Leave empty in development (no enforcement). Set in production .env.app.
     api_key: str = ""
 
-    # Scheduler — cron fields for the periodic ingestion job (UTC).
-    # Default: daily at 22:00 UTC (after US market close + 30-min buffer).
+    # Scheduler — two modes:
+    #   interval mode: set scheduler_interval_minutes > 0  (e.g. 10 = every 10 min)
+    #   cron mode:     set scheduler_interval_minutes = 0, use cron fields below
     scheduler_enabled: bool = True
+    scheduler_interval_minutes: int = 0  # 0 = use cron mode
     scheduler_cron_hour: str = "22"
     scheduler_cron_minute: str = "0"
     scheduler_cron_day_of_week: str = "mon-fri"  # weekdays only; set "*" for all days

@@ -10,6 +10,7 @@ from datetime import date, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -81,28 +82,29 @@ def start_scheduler() -> None:
         return
 
     _scheduler = BackgroundScheduler(timezone="UTC")
-    trigger = CronTrigger(
-        hour=settings.scheduler_cron_hour,
-        minute=settings.scheduler_cron_minute,
-        day_of_week=settings.scheduler_cron_day_of_week,
-        timezone="UTC",
-    )
+
+    if settings.scheduler_interval_minutes > 0:
+        trigger = IntervalTrigger(minutes=settings.scheduler_interval_minutes, timezone="UTC")
+        trigger_desc = f"every {settings.scheduler_interval_minutes} minutes"
+    else:
+        trigger = CronTrigger(
+            hour=settings.scheduler_cron_hour,
+            minute=settings.scheduler_cron_minute,
+            day_of_week=settings.scheduler_cron_day_of_week,
+            timezone="UTC",
+        )
+        trigger_desc = f"{settings.scheduler_cron_hour}:{settings.scheduler_cron_minute} UTC on {settings.scheduler_cron_day_of_week}"
+
     _scheduler.add_job(
         _run_ingestion_job,
         trigger=trigger,
         id="periodic_ingestion",
         name="Periodic OHLCV ingestion",
-        misfire_grace_time=300,  # allow up to 5 min late start (e.g. if server was briefly down)
+        misfire_grace_time=300,
         replace_existing=True,
     )
     _scheduler.start()
-    logger.info(
-        "Scheduler started: ingestion runs %s:%s UTC on %s, intervals=%s.",
-        settings.scheduler_cron_hour,
-        settings.scheduler_cron_minute,
-        settings.scheduler_cron_day_of_week,
-        settings.parsed_intervals(),
-    )
+    logger.info("Scheduler started: ingestion runs %s, intervals=%s.", trigger_desc, settings.parsed_intervals())
 
 
 def stop_scheduler() -> None:
