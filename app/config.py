@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # Comma-separated list of intervals to fetch on each scheduled run.
     # yfinance caps: 1m→7d, 2m/5m/15m/30m/60m/90m→60d, 1h→730d, 1d/1wk/1mo→unlimited.
     # The scheduler respects these caps automatically — no manual days config needed per interval.
-    scheduler_ingestion_intervals: str = "1d,1h,5m"
+    scheduler_ingestion_intervals: str = "1d,1h,5m,1m"
     scheduler_source_name: str = "yfinance"
 
     def parsed_intervals(self) -> list[str]:
