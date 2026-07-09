@@ -1,15 +1,14 @@
 # ── DB SERVER docker-compose ─────────────────────────────────────────────────
-# Deploy on the DB server only.
+# Deploy on the GCP DB VM only.
 #
-# Pre-requisites on the DB server:
-#   1. Block storage volume attached and mounted at /mnt/db-volume
-#      (Hetzner: hcloud volume create --size 20 --name marketlens-db)
-#      (DigitalOcean: create a Block Storage volume in the same datacenter)
-#   2. mkdir -p /mnt/db-volume/pgdata
-#   3. Firewall: allow port 5432 only from the app server's private IP.
-#      Block all other inbound on 5432.
+# Pre-requisites on the DB VM:
+#   1. GCP Persistent Disk attached and mounted at /mnt/disks/pgdata
+#      See DEPLOY-GCP.md for full mount instructions.
+#   2. mkdir -p /mnt/disks/pgdata
+#   3. GCP Firewall: port 5432 open to the app VM's internal IP only.
+#      SSH (22) open to 0.0.0.0/0 for local tunnel access (DBeaver etc.).
 #
-# Start: docker compose -f docker-compose.db.yml up -d
+# Start: docker compose -f docker-compose.db.yml --env-file .env.db up -d
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -24,9 +23,9 @@ services:
     ports:
       - "5432:5432"                         # bind to all interfaces; firewall restricts access
     volumes:
-      # Bind-mount to block storage — data survives container and server restarts.
-      # Change /mnt/db-volume/pgdata if your block storage is mounted elsewhere.
-      - /mnt/db-volume/pgdata:/var/lib/postgresql/data
+      # Bind-mount to GCP Persistent Disk — data survives container and VM restarts.
+      # GCP mounts the disk at /mnt/disks/pgdata (see DEPLOY-GCP.md).
+      - /mnt/disks/pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
