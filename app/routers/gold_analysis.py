@@ -118,9 +118,23 @@ def gold_analysis(
     usdinr = _fetch_closes(db, "USDINR", since, interval)
 
     # For daily bars: align on date only (COMEX and FX settle at different times).
-    if interval == "1d":
+    if interval == "1d" and isinstance(gold.index, pd.DatetimeIndex):
         gold.index = gold.index.normalize()
+    if interval == "1d" and isinstance(usdinr.index, pd.DatetimeIndex):
         usdinr.index = usdinr.index.normalize()
+
+    if gold.empty and usdinr.empty:
+        return GoldAnalysisResponse(
+            range=range, interval=interval, dates=[],
+            comex_usd=[], usd_inr=[], comex_inr=[], comex_inr_duty=[],
+            summary=GoldSummary(
+                comex_latest=None, comex_change_pct=None, usd_inr_latest=None,
+                comex_inr_latest=None, comex_inr_duty_latest=None,
+                india_premium=None, india_premium_pct=None,
+                period_start="", period_end="", trading_days=0,
+            ),
+            waterfall=[],
+        )
 
     combined = pd.DataFrame({"gold": gold, "usdinr": usdinr}).sort_index()
     combined = combined.ffill().bfill()
