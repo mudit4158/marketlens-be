@@ -44,32 +44,34 @@ def _run_upstox_ingestion_job() -> None:
     """Fetch recent intraday data for all Upstox-sourced instruments.
 
     Runs every 5 minutes so the 5m/1h MCX bars are always fresh.
-    Fetches last 2 days to patch any gaps without hitting rate limits.
+    Fetches last 2 days (historical) + today's intraday candles.
     Skips silently if no valid Upstox token is present (e.g. between daily refresh).
     """
     from app.models.ingestion import DataSource
     from app.models.instrument import Instrument, InstrumentSourceMapping
     from app.services.providers.upstox_provider import UpstoxProvider
 
+    logger.info("[upstox-ingest] Job started.")
     db = SessionLocal()
     try:
         source = db.query(DataSource).filter_by(name="upstox", is_active=True).one_or_none()
         if source is None:
+            logger.warning("[upstox-ingest] No active 'upstox' DataSource found — skipping.")
             return
 
-        # Check token before attempting any fetches
         provider: UpstoxProvider = PROVIDERS.get("upstox")  # type: ignore[assignment]
         if provider is None:
+            logger.warning("[upstox-ingest] UpstoxProvider not registered — skipping.")
             return
         try:
             provider._get_token()
-        except RuntimeError:
-            logger.debug("Upstox token not available — skipping intraday ingestion.")
+        except RuntimeError as exc:
+            logger.warning("[upstox-ingest] No valid token (%s) — skipping.", exc)
             return
 
-        # Find all instruments that have an Upstox source mapping
         mappings = db.query(InstrumentSourceMapping).filter_by(source_id=source.id).all()
         if not mappings:
+            logger.warning("[upstox-ingest] No Upstox instrument mappings found — skipping.")
             return
 
         instrument_ids = {m.instrument_id for m in mappings}
@@ -78,21 +80,31 @@ def _run_upstox_ingestion_job() -> None:
             .filter(Instrument.id.in_(instrument_ids), Instrument.is_active.is_(True))
             .all()
         )
+        logger.info("[upstox-ingest] Fetching %d instrument(s): %s",
+                    len(instruments), [i.symbol for i in instruments])
 
         end = date.today()
         start = end - timedelta(days=2)
         intraday_intervals = ["5m", "1m", "1h"]
+        total_rows = 0
 
         for interval in intraday_intervals:
+            interval_rows = 0
             for instrument in instruments:
                 run = ingest_instrument(db, instrument, source, start=start, end=end, interval=interval)
-                if run.status.value != "success":
-                    logger.warning(
-                        "Upstox intraday ingestion failed: %s [%s]: %s",
-                        instrument.symbol, interval, run.error_message,
-                    )
+                if run.status.value == "success":
+                    interval_rows += run.rows_ingested or 0
+                    logger.debug("[upstox-ingest] %s [%s] OK — %d rows upserted.",
+                                 instrument.symbol, interval, run.rows_ingested or 0)
+                else:
+                    logger.error("[upstox-ingest] %s [%s] FAILED: %s",
+                                 instrument.symbol, interval, run.error_message)
+            logger.info("[upstox-ingest] Interval %s done — %d rows upserted.", interval, interval_rows)
+            total_rows += interval_rows
+
+        logger.info("[upstox-ingest] Job complete — %d total rows upserted.", total_rows)
     except Exception:
-        logger.exception("Unhandled error in Upstox intraday ingestion job.")
+        logger.exception("[upstox-ingest] Unhandled error.")
     finally:
         db.close()
 
