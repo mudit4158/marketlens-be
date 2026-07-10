@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -11,6 +12,7 @@ from app.routers.auth import router as auth_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.exchanges import router as exchanges_router
 from app.routers.gold_analysis import router as gold_router
+from app.routers.silver_analysis import router as silver_router
 from app.scheduler import start_scheduler, stop_scheduler
 from app.services import upstox_auth
 from app.services.ingestion_service import register_provider
@@ -18,6 +20,12 @@ from app.services.providers.upstox_provider import UpstoxProvider
 from app.services.providers.yfinance_provider import YFinanceProvider
 
 settings = get_settings()
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
 
 
 @asynccontextmanager
@@ -72,6 +80,7 @@ app.include_router(prices.router)
 app.include_router(ingestion.router)
 app.include_router(dashboard_router)
 app.include_router(gold_router)
+app.include_router(silver_router)
 
 
 @app.get("/health")

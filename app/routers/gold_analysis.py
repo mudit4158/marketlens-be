@@ -16,8 +16,8 @@ router = APIRouter(prefix="/gold", tags=["gold-analysis"])
 TROY_OZ_TO_10G = 10 / 31.1035   # used for COMEX→INR conversion display
 
 RANGE_CONFIG: dict[str, dict] = {
-    "1H":  {"interval": "5m",  "hours": 1},
-    "3H":  {"interval": "5m",  "hours": 3},
+    "1H":  {"interval": "1m",  "hours": 1},
+    "3H":  {"interval": "1m",  "hours": 3},
     "12H": {"interval": "5m",  "hours": 12},
     "2D":  {"interval": "1h",  "days": 2},
     "5D":  {"interval": "1h",  "days": 5},
@@ -29,6 +29,7 @@ RANGE_CONFIG: dict[str, dict] = {
 }
 
 DATE_FMT: dict[str, str] = {
+    "1m": "%b %d %H:%M",
     "5m": "%b %d %H:%M",
     "1h": "%b %d %H:%M",
     "1d": "%b %d",
@@ -57,9 +58,11 @@ class GoldSummary(BaseModel):
 
 
 class GoldAnalysisResponse(BaseModel):
+    commodity: str = "gold"
     range: str
     interval: str
-    dates: list[str]
+    timestamps: list[str]                  # UTC ISO strings for frontend timezone formatting
+    dates: list[str]                       # Pre-formatted (kept for backward compat)
     comex_usd: list[float | None]
     usd_inr: list[float | None]
     comex_inr: list[float | None]         # COMEX converted to INR/10g
@@ -137,7 +140,8 @@ def gold_analysis(
 
     if gold.empty and usdinr.empty and mcx_gold.empty:
         return GoldAnalysisResponse(
-            range=range, interval=interval, dates=[],
+            commodity="gold", range=range, interval=interval,
+            timestamps=[], dates=[],
             comex_usd=[], usd_inr=[], comex_inr=[], mcx_inr=[],
             summary=empty_summary, waterfall=[],
         )
@@ -159,6 +163,7 @@ def gold_analysis(
 
     fmt = DATE_FMT.get(interval, "%b %d")
     dates = [ts.strftime(fmt) for ts in combined.index]
+    timestamps = [ts.isoformat() for ts in combined.index]
 
     def col(name: str) -> list[float | None]:
         return [round(v, 2) if pd.notna(v) else None for v in combined[name]]
@@ -221,8 +226,10 @@ def gold_analysis(
             prev = row
 
     return GoldAnalysisResponse(
+        commodity="gold",
         range=range,
         interval=interval,
+        timestamps=timestamps,
         dates=dates,
         comex_usd=col("gold"),
         usd_inr=col("usdinr"),
