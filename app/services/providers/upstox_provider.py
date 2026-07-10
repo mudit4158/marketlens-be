@@ -24,24 +24,29 @@ import httpx
 
 from app.services.providers.base import MarketDataProvider, NormalizedBar
 
-_INTERVAL_MAP: dict[str, str] = {
-    "1m":  "1minute",
-    "5m":  "5minute",
-    "15m": "15minute",
-    "30m": "30minute",
-    "1h":  "60minute",
-    "1d":  "day",
-    "1wk": "week",
-    "1mo": "month",
+# V3 API: unit and interval are separate. Unit = minutes/hours/days/weeks/months.
+# Our canonical interval → (unit, interval_value)
+# Retrieval limits per request: minutes ≤15 → 1 month, minutes >15 → 1 quarter,
+# hours → 1 quarter, days → 1 decade.
+_INTERVAL_MAP: dict[str, tuple[str, int]] = {
+    "1m":  ("minutes", 1),
+    "5m":  ("minutes", 5),
+    "15m": ("minutes", 15),
+    "30m": ("minutes", 30),
+    "1h":  ("hours",   1),
+    "1d":  ("days",    1),
+    "1wk": ("weeks",   1),
+    "1mo": ("months",  1),
 }
 
+# Max days we request per backfill call (stays within per-request retrieval limits)
 _INTERVAL_MAX_DAYS: dict[str, int] = {
-    "1m":  180,
-    "5m":  180,
-    "15m": 180,
-    "30m": 180,
-    "1h":  180,
-    "1d":  3650,
+    "1m":  30,    # 1-month limit for ≤15min intervals
+    "5m":  30,
+    "15m": 30,
+    "30m": 90,    # 1-quarter limit for >15min intervals
+    "1h":  90,
+    "1d":  3650,  # 1 decade
     "1wk": 3650,
     "1mo": 3650,
 }
@@ -53,7 +58,7 @@ _INTERVAL_MAX_DAYS: dict[str, int] = {
 # We hardcode the currently active near-month contract keys here.
 # When rollover happens, the InstrumentSourceMapping source_ticker should be
 # updated via the API (POST /instruments or a migration).
-_BASE_URL = "https://api.upstox.com/v2"
+_BASE_URL = "https://api.upstox.com/v3"
 
 
 class UpstoxProvider(MarketDataProvider):
@@ -85,9 +90,10 @@ class UpstoxProvider(MarketDataProvider):
         """
         source_ticker is the Upstox instrument_key, e.g. "MCX_FO|441141"
         """
-        upstox_interval = _INTERVAL_MAP.get(interval)
-        if upstox_interval is None:
+        interval_params = _INTERVAL_MAP.get(interval)
+        if interval_params is None:
             raise ValueError(f"Unsupported interval '{interval}' for Upstox provider.")
+        unit, interval_value = interval_params
 
         # Enforce history limit
         max_days = self.max_days_for_interval(interval)
@@ -102,18 +108,13 @@ class UpstoxProvider(MarketDataProvider):
             "Accept": "application/json",
         }
 
-        # Upstox instrument keys contain '|' which must be percent-encoded in URL paths
+        # V3 URL: /v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}
+        # Instrument keys contain '|' which must be percent-encoded in URL paths.
         encoded_key = quote(source_ticker, safe="")
-        if upstox_interval == "day":
-            url = (
-                f"{_BASE_URL}/historical-candle/{encoded_key}"
-                f"/{upstox_interval}/{end.isoformat()}/{start.isoformat()}"
-            )
-        else:
-            url = (
-                f"{_BASE_URL}/historical-candle/intraday/{encoded_key}"
-                f"/{upstox_interval}/{end.isoformat()}/{start.isoformat()}"
-            )
+        url = (
+            f"{_BASE_URL}/historical-candle/{encoded_key}"
+            f"/{unit}/{interval_value}/{end.isoformat()}/{start.isoformat()}"
+        )
 
         resp = httpx.get(url, headers=headers, timeout=30)
         resp.raise_for_status()

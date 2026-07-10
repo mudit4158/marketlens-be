@@ -34,12 +34,13 @@ MCX_INSTRUMENTS = [
     ("MCX_SILVER", "MCX Silver Mini Futures (Near Month)",  AssetClass.commodity, "Metals", "INR", "MCX_FO|471726"),
 ]
 
-# Upstox intraday limit: 6 months. EOD: 10 years.
+# Upstox v3 supported intervals: 1-300 minutes, 1-5 hours, days, weeks, months
+# Per-request limits: ≤15min → 1 month, >15min → 1 quarter, hours → 1 quarter
 BACKFILL_INTERVALS = [
-    ("1d", 3650),  # 10Y daily
-    ("1h",  180),  # 6M hourly
-    ("5m",  180),  # 6M 5-min
-    ("1m",   2),   # 2d 1-min (Upstox intraday is session-level, limit aggressively)
+    ("1d",  3650),  # 10Y daily
+    ("1h",    90),  # 1 quarter hourly
+    ("5m",    30),  # 1 month 5-min
+    ("1m",    30),  # 1 month 1-min
 ]
 
 
