@@ -122,11 +122,11 @@ def gold_analysis(
     usdinr  = _fetch_closes(db, "USDINR",   since, interval)
     mcx_gold = _fetch_closes(db, "MCX_GOLD", since, interval)  # MCX INR/10g
 
-    # Normalise daily bars to date-only index for alignment
+    # Normalise daily bars to midnight UTC for alignment (keeps DatetimeIndex intact)
     if interval == "1d":
         for s in (gold, usdinr, mcx_gold):
             if isinstance(s.index, pd.DatetimeIndex):
-                s.index = s.index.normalize()
+                s.index = s.index.normalize().tz_localize(None).tz_localize("UTC")
 
     empty_summary = GoldSummary(
         comex_usd_latest=None, comex_usd_change_pct=None, usd_inr_latest=None,
