@@ -122,11 +122,11 @@ def gold_analysis(
     usdinr  = _fetch_closes(db, "USDINR",   since, interval)
     mcx_gold = _fetch_closes(db, "MCX_GOLD", since, interval)  # MCX INR/10g
 
-    # Normalise daily bars to midnight UTC for alignment (keeps DatetimeIndex intact)
+    # Normalise daily bars to midnight UTC for alignment
     if interval == "1d":
         for s in (gold, usdinr, mcx_gold):
-            if isinstance(s.index, pd.DatetimeIndex):
-                s.index = s.index.normalize().tz_localize(None).tz_localize("UTC")
+            if isinstance(s.index, pd.DatetimeIndex) and not s.empty:
+                s.index = s.index.floor("D")
 
     empty_summary = GoldSummary(
         comex_usd_latest=None, comex_usd_change_pct=None, usd_inr_latest=None,
@@ -190,7 +190,7 @@ def gold_analysis(
 
     # ── Waterfall (weekly decomposition, daily interval only) ─────────────────
     waterfall: list[WaterfallEntry] = []
-    if interval == "1d" and not combined.empty:
+    if interval == "1d" and not combined.empty and isinstance(combined.index, pd.DatetimeIndex):
         weekly = combined.resample("W-FRI").agg({
             "gold": "last", "usdinr": "last",
             "comex_inr": "last", "mcx_gold": "last",
