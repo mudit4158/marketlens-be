@@ -84,11 +84,45 @@ class UpstoxProvider(MarketDataProvider):
     def max_days_for_interval(self, interval: str) -> int:
         return _INTERVAL_MAX_DAYS.get(interval, 180)
 
+    def _parse_candles(self, candles: list) -> list[NormalizedBar]:
+        bars: list[NormalizedBar] = []
+        for c in candles:
+            ts = datetime.fromisoformat(c[0])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            bars.append(NormalizedBar(
+                ts=ts,
+                open=float(c[1]),
+                high=float(c[2]),
+                low=float(c[3]),
+                close=float(c[4]),
+                volume=float(c[5]) if c[5] is not None else None,
+                adjusted_close=None,
+            ))
+        return bars
+
+    def _fetch_intraday(
+        self, encoded_key: str, unit: str, interval_value: int, headers: dict
+    ) -> list[NormalizedBar]:
+        """Fetch today's intraday candles from the Upstox intraday endpoint."""
+        url = f"{_BASE_URL}/historical-candle/intraday/{encoded_key}/{unit}/{interval_value}"
+        resp = httpx.get(url, headers=headers, timeout=30)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        candles = resp.json().get("data", {}).get("candles", [])
+        bars = self._parse_candles(candles)
+        bars.reverse()
+        return bars
+
     def fetch_ohlcv(
         self, source_ticker: str, start: date, end: date, interval: str = "1d"
     ) -> list[NormalizedBar]:
         """
         source_ticker is the Upstox instrument_key, e.g. "MCX_FO|441141"
+
+        For intraday intervals (non-daily), combines historical candles (up to yesterday)
+        with today's intraday candles so the result is always up-to-the-minute.
         """
         interval_params = _INTERVAL_MAP.get(interval)
         if interval_params is None:
@@ -108,34 +142,25 @@ class UpstoxProvider(MarketDataProvider):
             "Accept": "application/json",
         }
 
-        # V3 URL: /v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}
-        # Instrument keys contain '|' which must be percent-encoded in URL paths.
         encoded_key = quote(source_ticker, safe="")
+
+        # Historical endpoint returns completed candles up to yesterday's close.
         url = (
             f"{_BASE_URL}/historical-candle/{encoded_key}"
             f"/{unit}/{interval_value}/{end.isoformat()}/{start.isoformat()}"
         )
-
         resp = httpx.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
-
-        candles = data.get("data", {}).get("candles", [])
-        bars: list[NormalizedBar] = []
-        for c in candles:
-            # Upstox candle format: [timestamp, open, high, low, close, volume, oi]
-            ts = datetime.fromisoformat(c[0])
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            bars.append(NormalizedBar(
-                ts=ts,
-                open=float(c[1]),
-                high=float(c[2]),
-                low=float(c[3]),
-                close=float(c[4]),
-                volume=float(c[5]) if c[5] is not None else None,
-                adjusted_close=None,
-            ))
-        # Upstox returns newest first — reverse to chronological order
+        candles = resp.json().get("data", {}).get("candles", [])
+        bars = self._parse_candles(candles)
         bars.reverse()
+
+        # For intraday intervals, also fetch today's candles (separate endpoint).
+        if unit != "days" and unit != "weeks" and unit != "months":
+            today_bars = self._fetch_intraday(encoded_key, unit, interval_value, headers)
+            # Merge: deduplicate by timestamp (today_bars take precedence for current candle)
+            existing_ts = {b.ts for b in bars}
+            bars.extend(b for b in today_bars if b.ts not in existing_ts)
+            bars.sort(key=lambda b: b.ts)
+
         return bars
