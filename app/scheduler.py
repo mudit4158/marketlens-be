@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models.ingestion import DataSource
 from app.models.instrument import Instrument
-from app.services.ingestion_service import ingest_instrument
+from app.services.ingestion_service import PROVIDERS, ingest_instrument
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,63 @@ def _run_upstox_token_refresh() -> None:
             logger.warning("Upstox token refresh failed or skipped — check credentials config.")
     except Exception:
         logger.exception("Unhandled error in Upstox token refresh job.")
+    finally:
+        db.close()
+
+
+def _run_upstox_ingestion_job() -> None:
+    """Fetch recent intraday data for all Upstox-sourced instruments.
+
+    Runs every 5 minutes so the 5m/1h MCX bars are always fresh.
+    Fetches last 2 days to patch any gaps without hitting rate limits.
+    Skips silently if no valid Upstox token is present (e.g. between daily refresh).
+    """
+    from app.models.ingestion import DataSource
+    from app.models.instrument import Instrument, InstrumentSourceMapping
+    from app.services.providers.upstox_provider import UpstoxProvider
+
+    db = SessionLocal()
+    try:
+        source = db.query(DataSource).filter_by(name="upstox", is_active=True).one_or_none()
+        if source is None:
+            return
+
+        # Check token before attempting any fetches
+        provider: UpstoxProvider = PROVIDERS.get("upstox")  # type: ignore[assignment]
+        if provider is None:
+            return
+        try:
+            provider._get_token()
+        except RuntimeError:
+            logger.debug("Upstox token not available — skipping intraday ingestion.")
+            return
+
+        # Find all instruments that have an Upstox source mapping
+        mappings = db.query(InstrumentSourceMapping).filter_by(source_id=source.id).all()
+        if not mappings:
+            return
+
+        instrument_ids = {m.instrument_id for m in mappings}
+        instruments = (
+            db.query(Instrument)
+            .filter(Instrument.id.in_(instrument_ids), Instrument.is_active.is_(True))
+            .all()
+        )
+
+        end = date.today()
+        start = end - timedelta(days=2)
+        intraday_intervals = ["5m", "1m", "1h"]
+
+        for interval in intraday_intervals:
+            for instrument in instruments:
+                run = ingest_instrument(db, instrument, source, start=start, end=end, interval=interval)
+                if run.status.value != "success":
+                    logger.warning(
+                        "Upstox intraday ingestion failed: %s [%s]: %s",
+                        instrument.symbol, interval, run.error_message,
+                    )
+    except Exception:
+        logger.exception("Unhandled error in Upstox intraday ingestion job.")
     finally:
         db.close()
 
@@ -129,6 +186,17 @@ def start_scheduler() -> None:
         id="upstox_token_refresh",
         name="Upstox OAuth2 token refresh",
         misfire_grace_time=600,
+        replace_existing=True,
+    )
+
+    # Upstox intraday ingestion — every 5 minutes to keep MCX 5m/1h bars fresh.
+    # MCX trades 09:00–23:30 IST = 03:30–18:00 UTC. Runs always; no-ops if market is closed.
+    _scheduler.add_job(
+        _run_upstox_ingestion_job,
+        trigger=IntervalTrigger(minutes=5, timezone="UTC"),
+        id="upstox_intraday_ingestion",
+        name="Upstox intraday MCX data ingestion",
+        misfire_grace_time=120,
         replace_existing=True,
     )
 
