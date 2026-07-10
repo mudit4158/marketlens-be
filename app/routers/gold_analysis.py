@@ -83,7 +83,7 @@ def _fetch_closes(db: Session, symbol: str, since: datetime, interval: str) -> p
         .all()
     )
     if not rows:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([], tz="UTC"))
     idx = pd.to_datetime([r.ts for r in rows], utc=True)
     return pd.Series([float(r.close) for r in rows], index=idx, name=symbol)
 
