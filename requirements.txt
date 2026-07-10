@@ -10,3 +10,4 @@ yfinance>=0.2.40
 pandas>=2.2
 apscheduler>=3.10
 httpx>=0.27
+pyotp>=2.9

@@ -23,6 +23,23 @@ logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
+def _run_upstox_token_refresh() -> None:
+    """Refresh the Upstox access token using stored credentials + TOTP.
+    Runs every 12 hours so the token never goes stale between the daily 3:30 AM IST expiry.
+    """
+    from app.services.upstox_auth import auto_refresh_token
+
+    db = SessionLocal()
+    try:
+        success = auto_refresh_token(db)
+        if not success:
+            logger.warning("Upstox token refresh failed or skipped — check credentials config.")
+    except Exception:
+        logger.exception("Unhandled error in Upstox token refresh job.")
+    finally:
+        db.close()
+
+
 def _run_ingestion_job() -> None:
     from app.services.providers.yfinance_provider import YFinanceProvider
 
@@ -103,8 +120,21 @@ def start_scheduler() -> None:
         misfire_grace_time=300,
         replace_existing=True,
     )
+
+    # Upstox token refresh — runs at 04:00 and 16:00 IST (= 22:30 and 10:30 UTC)
+    # Tokens expire at 03:30 IST, so the 04:00 IST run gets a fresh token every day.
+    _scheduler.add_job(
+        _run_upstox_token_refresh,
+        trigger=CronTrigger(hour="22,10", minute="30", timezone="UTC"),
+        id="upstox_token_refresh",
+        name="Upstox OAuth2 token refresh",
+        misfire_grace_time=600,
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Scheduler started: ingestion runs %s, intervals=%s.", trigger_desc, settings.parsed_intervals())
+    logger.info("Upstox token refresh scheduled at 04:00 and 16:00 IST daily.")
 
 
 def stop_scheduler() -> None:

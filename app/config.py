@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     upstox_api_secret: str = ""
     # Redirect URI registered in the Upstox developer portal
     upstox_redirect_uri: str = "https://marketlenss.duckdns.org/auth/upstox/callback"
+    # Upstox automated login — used by the scheduler for headless daily token refresh.
+    # Leave empty to disable auto-refresh (manual /auth/upstox/login required instead).
+    upstox_mobile: str = ""   # registered mobile number (10 digits)
+    upstox_pin: str = ""      # 6-digit login PIN
+    upstox_totp_secret: str = ""  # base32 TOTP secret from Upstox 2FA setup
 
     def parsed_intervals(self) -> list[str]:
         return [i.strip() for i in self.scheduler_ingestion_intervals.split(",") if i.strip()]
