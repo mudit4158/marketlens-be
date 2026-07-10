@@ -58,7 +58,7 @@ async def api_key_middleware(request: Request, call_next) -> Response:
     /health is always exempt so load-balancer and uptime checks pass.
     In development (API_KEY="") enforcement is skipped entirely.
     """
-    if settings.api_key and request.url.path != "/health" and request.method != "OPTIONS":
+    if settings.api_key and request.url.path != "/health" and not request.url.path.startswith("/auth/") and request.method != "OPTIONS":
         if request.headers.get("X-API-Key") != settings.api_key:
             return Response(content='{"detail":"Forbidden"}', status_code=403,
                             media_type="application/json")
