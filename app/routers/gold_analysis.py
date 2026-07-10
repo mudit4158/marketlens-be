@@ -1,4 +1,4 @@
-"""Gold-specific analysis endpoint: COMEX vs computed MCX proxy, USD/INR decomposition."""
+"""Gold analysis: COMEX futures (USD) vs MCX futures (INR) with USD/INR decomposition."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -13,11 +13,7 @@ from app.models.price import PriceBar
 
 router = APIRouter(prefix="/gold", tags=["gold-analysis"])
 
-# Troy oz → grams conversion; MCX quotes per 10g.
-TROY_OZ_TO_10G = 10 / 31.1035
-
-# Approximate India import duty + GST + other levies as a multiplier on the converted price.
-INDIA_DUTY_FACTOR = 1.18
+TROY_OZ_TO_10G = 10 / 31.1035   # used for COMEX→INR conversion display
 
 RANGE_CONFIG: dict[str, dict] = {
     "1H":  {"interval": "5m",  "hours": 1},
@@ -43,17 +39,18 @@ class WaterfallEntry(BaseModel):
     label: str
     comex_effect: float
     forex_effect: float
-    premium_residual: float
+    mcx_premium: float
 
 
 class GoldSummary(BaseModel):
-    comex_latest: float | None
-    comex_change_pct: float | None
+    comex_usd_latest: float | None
+    comex_usd_change_pct: float | None
     usd_inr_latest: float | None
-    comex_inr_latest: float | None
-    comex_inr_duty_latest: float | None
-    india_premium: float | None
-    india_premium_pct: float | None
+    comex_inr_latest: float | None        # COMEX converted to INR/10g (no duty)
+    mcx_inr_latest: float | None          # Actual MCX price INR/10g
+    mcx_premium_abs: float | None         # MCX − COMEX_INR (actual spread)
+    mcx_premium_pct: float | None
+    has_mcx_data: bool
     period_start: str
     period_end: str
     trading_days: int
@@ -65,8 +62,8 @@ class GoldAnalysisResponse(BaseModel):
     dates: list[str]
     comex_usd: list[float | None]
     usd_inr: list[float | None]
-    comex_inr: list[float | None]
-    comex_inr_duty: list[float | None]
+    comex_inr: list[float | None]         # COMEX converted to INR/10g
+    mcx_inr: list[float | None]           # Actual MCX price (None when not yet available)
     summary: GoldSummary
     waterfall: list[WaterfallEntry]
 
@@ -91,10 +88,17 @@ def _fetch_closes(db: Session, symbol: str, since: datetime, interval: str) -> p
     return pd.Series([float(r.close) for r in rows], index=idx, name=symbol)
 
 
-def _pct(a: float, b: float | None) -> float | None:
-    if b is None or b == 0:
+def _pct(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None or b == 0:
         return None
     return round((a - b) / b * 100, 2)
+
+
+def _val(series: pd.Series, idx: int) -> float | None:
+    if series.empty or len(series) <= abs(idx):
+        return None
+    v = series.iloc[idx]
+    return float(v) if pd.notna(v) else None
 
 
 @router.get("/analysis", response_model=GoldAnalysisResponse)
@@ -102,7 +106,7 @@ def gold_analysis(
     range: str = Query(default="1M", pattern="^(1H|3H|12H|2D|5D|1M|6M|1Y|5Y|YTD)$"),
     db: Session = Depends(get_db),
 ) -> GoldAnalysisResponse:
-    """Return COMEX gold, USD/INR, and derived ₹-converted series for the requested time range."""
+    """COMEX gold (USD/oz) vs MCX Gold futures (INR/10g) with USD/INR decomposition."""
     cfg = RANGE_CONFIG[range]
     interval: str = cfg["interval"]
     now = datetime.now(timezone.utc)
@@ -114,36 +118,44 @@ def gold_analysis(
     else:
         since = now - timedelta(days=cfg["days"])
 
-    gold = _fetch_closes(db, "GOLD", since, interval)
-    usdinr = _fetch_closes(db, "USDINR", since, interval)
+    gold    = _fetch_closes(db, "GOLD",     since, interval)   # COMEX USD/oz
+    usdinr  = _fetch_closes(db, "USDINR",   since, interval)
+    mcx_gold = _fetch_closes(db, "MCX_GOLD", since, interval)  # MCX INR/10g
 
-    # For daily bars: align on date only (COMEX and FX settle at different times).
-    if interval == "1d" and isinstance(gold.index, pd.DatetimeIndex):
-        gold.index = gold.index.normalize()
-    if interval == "1d" and isinstance(usdinr.index, pd.DatetimeIndex):
-        usdinr.index = usdinr.index.normalize()
+    # Normalise daily bars to date-only index for alignment
+    if interval == "1d":
+        for s in (gold, usdinr, mcx_gold):
+            if isinstance(s.index, pd.DatetimeIndex):
+                s.index = s.index.normalize()
 
-    if gold.empty and usdinr.empty:
+    empty_summary = GoldSummary(
+        comex_usd_latest=None, comex_usd_change_pct=None, usd_inr_latest=None,
+        comex_inr_latest=None, mcx_inr_latest=None,
+        mcx_premium_abs=None, mcx_premium_pct=None,
+        has_mcx_data=False, period_start="", period_end="", trading_days=0,
+    )
+
+    if gold.empty and usdinr.empty and mcx_gold.empty:
         return GoldAnalysisResponse(
             range=range, interval=interval, dates=[],
-            comex_usd=[], usd_inr=[], comex_inr=[], comex_inr_duty=[],
-            summary=GoldSummary(
-                comex_latest=None, comex_change_pct=None, usd_inr_latest=None,
-                comex_inr_latest=None, comex_inr_duty_latest=None,
-                india_premium=None, india_premium_pct=None,
-                period_start="", period_end="", trading_days=0,
-            ),
-            waterfall=[],
+            comex_usd=[], usd_inr=[], comex_inr=[], mcx_inr=[],
+            summary=empty_summary, waterfall=[],
         )
 
-    combined = pd.DataFrame({"gold": gold, "usdinr": usdinr}).sort_index()
-    combined = combined.ffill().bfill()
+    combined = pd.DataFrame({
+        "gold": gold,
+        "usdinr": usdinr,
+        "mcx_gold": mcx_gold,
+    }).sort_index()
 
-    # Filter to since *after* backfill (backfill may pull a little before since).
+    # Forward-fill COMEX + FX (liquid, continuous); MCX may have gaps around expiry
+    combined[["gold", "usdinr"]] = combined[["gold", "usdinr"]].ffill().bfill()
+    combined["mcx_gold"] = combined["mcx_gold"].ffill()
+
     combined = combined[combined.index >= since]
 
+    # COMEX expressed in INR per 10g (no duty — raw conversion for comparison)
     combined["comex_inr"] = combined["gold"] * TROY_OZ_TO_10G * combined["usdinr"]
-    combined["comex_inr_duty"] = combined["comex_inr"] * INDIA_DUTY_FACTOR
 
     fmt = DATE_FMT.get(interval, "%b %d")
     dates = [ts.strftime(fmt) for ts in combined.index]
@@ -151,54 +163,60 @@ def gold_analysis(
     def col(name: str) -> list[float | None]:
         return [round(v, 2) if pd.notna(v) else None for v in combined[name]]
 
-    # ── summary ──────────────────────────────────────────────────────────────
-    latest_gold = float(combined["gold"].iloc[-1]) if not combined.empty else None
-    first_gold  = float(combined["gold"].iloc[0])  if not combined.empty else None
-    latest_inr  = float(combined["usdinr"].iloc[-1]) if not combined.empty else None
-    latest_cinr = float(combined["comex_inr"].iloc[-1]) if not combined.empty else None
-    latest_cduty = float(combined["comex_inr_duty"].iloc[-1]) if not combined.empty else None
-    india_prem  = round(latest_cduty - latest_cinr, 2) if (latest_cduty and latest_cinr) else None
-    india_prem_pct = _pct(latest_cduty, latest_cinr)
+    has_mcx = not combined["mcx_gold"].dropna().empty
 
-    period_start = dates[0] if dates else ""
-    period_end   = dates[-1] if dates else ""
+    # ── Summary ───────────────────────────────────────────────────────────────
+    comex_latest  = _val(combined["gold"], -1)
+    comex_first   = _val(combined["gold"], 0)
+    inr_latest    = _val(combined["usdinr"], -1)
+    cinr_latest   = _val(combined["comex_inr"], -1)
+    mcx_latest    = _val(combined["mcx_gold"], -1)
+    mcx_prem_abs  = round(mcx_latest - cinr_latest, 2) if (mcx_latest and cinr_latest) else None
+    mcx_prem_pct  = _pct(mcx_latest, cinr_latest)
 
     summary = GoldSummary(
-        comex_latest=round(latest_gold, 2) if latest_gold else None,
-        comex_change_pct=_pct(latest_gold, first_gold) if latest_gold else None,
-        usd_inr_latest=round(latest_inr, 4) if latest_inr else None,
-        comex_inr_latest=round(latest_cinr, 2) if latest_cinr else None,
-        comex_inr_duty_latest=round(latest_cduty, 2) if latest_cduty else None,
-        india_premium=india_prem,
-        india_premium_pct=india_prem_pct,
-        period_start=period_start,
-        period_end=period_end,
+        comex_usd_latest=round(comex_latest, 2) if comex_latest else None,
+        comex_usd_change_pct=_pct(comex_latest, comex_first),
+        usd_inr_latest=round(inr_latest, 4) if inr_latest else None,
+        comex_inr_latest=round(cinr_latest, 2) if cinr_latest else None,
+        mcx_inr_latest=round(mcx_latest, 2) if mcx_latest else None,
+        mcx_premium_abs=mcx_prem_abs,
+        mcx_premium_pct=mcx_prem_pct,
+        has_mcx_data=has_mcx,
+        period_start=dates[0] if dates else "",
+        period_end=dates[-1] if dates else "",
         trading_days=len(combined),
     )
 
-    # ── waterfall (weekly for 1d; skip for intraday) ─────────────────────────
+    # ── Waterfall (weekly decomposition, daily interval only) ─────────────────
     waterfall: list[WaterfallEntry] = []
     if interval == "1d" and not combined.empty:
-        weekly = combined.resample("W-FRI").agg({"gold": "last", "usdinr": "last", "comex_inr": "last"}).dropna()
+        weekly = combined.resample("W-FRI").agg({
+            "gold": "last", "usdinr": "last",
+            "comex_inr": "last", "mcx_gold": "last",
+        }).dropna(subset=["gold", "usdinr"])
+
         prev = None
         for ts, row in weekly.iterrows():
             if prev is None:
                 prev = row
                 continue
-            # MCX change approximated as comex_inr change.
-            total_change = round(row["comex_inr"] - prev["comex_inr"], 2)
-            # COMEX contribution: delta gold price expressed in ₹ (holding FX constant).
-            comex_effect = round((row["gold"] - prev["gold"]) * TROY_OZ_TO_10G * prev["usdinr"], 2)
-            # FX contribution: delta FX applied to new COMEX price.
-            forex_effect = round(row["gold"] * TROY_OZ_TO_10G * (row["usdinr"] - prev["usdinr"]), 2)
-            # Premium residual = what's left (duty/premium changes).
-            premium_residual = round(total_change - comex_effect - forex_effect, 2)
-            label = f"{prev.name.strftime('%b %d')}–{ts.strftime('%b %d')}"
+            comex_effect = round(
+                (row["gold"] - prev["gold"]) * TROY_OZ_TO_10G * prev["usdinr"], 2
+            )
+            forex_effect = round(
+                row["gold"] * TROY_OZ_TO_10G * (row["usdinr"] - prev["usdinr"]), 2
+            )
+            # MCX premium change: how much MCX moved above/below the COMEX-INR conversion
+            mcx_this = row["mcx_gold"] if pd.notna(row["mcx_gold"]) else row["comex_inr"]
+            mcx_prev = prev["mcx_gold"] if pd.notna(prev["mcx_gold"]) else prev["comex_inr"]
+            mcx_premium = round((mcx_this - row["comex_inr"]) - (mcx_prev - prev["comex_inr"]), 2)
+
             waterfall.append(WaterfallEntry(
-                label=label,
+                label=f"{prev.name.strftime('%b %d')}–{ts.strftime('%b %d')}",
                 comex_effect=comex_effect,
                 forex_effect=forex_effect,
-                premium_residual=premium_residual,
+                mcx_premium=mcx_premium,
             ))
             prev = row
 
@@ -209,7 +227,7 @@ def gold_analysis(
         comex_usd=col("gold"),
         usd_inr=col("usdinr"),
         comex_inr=col("comex_inr"),
-        comex_inr_duty=col("comex_inr_duty"),
+        mcx_inr=col("mcx_gold"),
         summary=summary,
         waterfall=waterfall,
     )

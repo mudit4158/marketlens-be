@@ -5,11 +5,16 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.db import SessionLocal
 from app.routers import ingestion, instruments, prices
+from app.routers.auth import router as auth_router
 from app.routers.dashboard import router as dashboard_router
+from app.routers.exchanges import router as exchanges_router
 from app.routers.gold_analysis import router as gold_router
 from app.scheduler import start_scheduler, stop_scheduler
+from app.services import upstox_auth
 from app.services.ingestion_service import register_provider
+from app.services.providers.upstox_provider import UpstoxProvider
 from app.services.providers.yfinance_provider import YFinanceProvider
 
 settings = get_settings()
@@ -18,6 +23,17 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     register_provider(YFinanceProvider())
+    # Register Upstox provider with a DB-backed token getter.
+    # The getter is called fresh on every fetch so daily token refreshes are
+    # picked up automatically without restarting the app.
+    def _upstox_token_getter() -> str | None:
+        db = SessionLocal()
+        try:
+            return upstox_auth.get_valid_token(db)
+        finally:
+            db.close()
+
+    register_provider(UpstoxProvider(token_getter=_upstox_token_getter))
     start_scheduler()
     yield
     stop_scheduler()
@@ -49,6 +65,8 @@ async def api_key_middleware(request: Request, call_next) -> Response:
     return await call_next(request)
 
 
+app.include_router(auth_router)
+app.include_router(exchanges_router)
 app.include_router(instruments.router)
 app.include_router(prices.router)
 app.include_router(ingestion.router)

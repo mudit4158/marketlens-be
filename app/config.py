@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     scheduler_ingestion_intervals: str = "1d,1h,5m,1m"
     scheduler_source_name: str = "yfinance"
 
+    # Upstox OAuth2 credentials (set in production via Secret Manager / .env)
+    upstox_api_key: str = ""
+    upstox_api_secret: str = ""
+    # Redirect URI registered in the Upstox developer portal
+    upstox_redirect_uri: str = "https://marketlenss.duckdns.org/auth/upstox/callback"
+
     def parsed_intervals(self) -> list[str]:
         return [i.strip() for i in self.scheduler_ingestion_intervals.split(",") if i.strip()]
 
