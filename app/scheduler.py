@@ -110,6 +110,7 @@ def _run_upstox_ingestion_job() -> None:
 
 
 def _run_ingestion_job() -> None:
+    from app.models.instrument import InstrumentSourceMapping
     from app.services.providers.yfinance_provider import YFinanceProvider
 
     settings = get_settings()
@@ -123,9 +124,16 @@ def _run_ingestion_job() -> None:
             logger.error("Scheduled ingestion: DataSource '%s' not found or inactive.", settings.scheduler_source_name)
             return
 
-        instruments = db.query(Instrument).filter(Instrument.is_active.is_(True)).all()
+        # Only fetch instruments that have a mapping for this source (excludes MCX/Upstox instruments)
+        mappings = db.query(InstrumentSourceMapping).filter_by(source_id=source.id).all()
+        instrument_ids = {m.instrument_id for m in mappings}
+        instruments = (
+            db.query(Instrument)
+            .filter(Instrument.id.in_(instrument_ids), Instrument.is_active.is_(True))
+            .all()
+        )
         if not instruments:
-            logger.warning("Scheduled ingestion: no active instruments to fetch.")
+            logger.warning("Scheduled ingestion: no active instruments with '%s' mapping.", source.name)
             return
 
         end = date.today()
