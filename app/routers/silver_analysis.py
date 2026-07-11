@@ -88,7 +88,7 @@ def silver_analysis(
     # Reindex to the full requested time range so the x-axis always spans the
     # complete window even when recent bars haven't been ingested yet.
     # Floor `since` to the same interval boundary so full_index aligns with the data.
-    since_floor = pd.Timestamp(since, tz="UTC").floor(freq)
+    since_floor = pd.Timestamp(since).floor(freq)
     full_index = pd.date_range(start=since_floor, end=now, freq=freq, tz="UTC")
     combined = combined.reindex(full_index)
 
