@@ -161,13 +161,17 @@ def gold_analysis(
     # COMEX expressed in INR per 10g (no duty — raw conversion for comparison)
     combined["comex_inr"] = combined["gold"] * TROY_OZ_TO_10G * combined["usdinr"]
 
-    # Reindex to the full requested time range so the x-axis always spans the
-    # complete window even when recent data hasn't been ingested yet.
+    # Floor timestamps to interval boundary so they align with the full index,
+    # then dedup in case flooring creates collisions.
     _FREQ = {"1m": "1min", "5m": "5min", "1h": "1h", "1d": "1D"}
-    full_index = pd.date_range(
-        start=since, end=now,
-        freq=_FREQ.get(interval, "1D"), tz="UTC",
-    )
+    freq = _FREQ.get(interval, "1D")
+    combined.index = combined.index.floor(freq)
+    combined = combined[~combined.index.duplicated(keep="last")]
+
+    # Reindex to the full requested time range so the x-axis always spans the
+    # complete window even when recent bars haven't been ingested yet.
+    since_floor = since.replace(second=0, microsecond=0)
+    full_index = pd.date_range(start=since_floor, end=now, freq=freq, tz="UTC")
     combined = combined.reindex(full_index)
 
     fmt = DATE_FMT.get(interval, "%b %d")
