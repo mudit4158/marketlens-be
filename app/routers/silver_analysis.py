@@ -13,6 +13,7 @@ from app.routers.gold_analysis import (
     GoldAnalysisResponse,
     GoldSummary,
     WaterfallEntry,
+    _apply_market_fill,
     _fetch_closes,
     _pct,
     _val,
@@ -72,25 +73,25 @@ def silver_analysis(
     }).sort_index()
 
     combined[["silver", "usdinr"]] = combined[["silver", "usdinr"]].ffill().bfill()
-    # Do NOT ffill mcx_silver — gaps should render as line breaks on the chart.
+    # Do NOT ffill mcx_silver here — market-hours gaps stay null; handled below.
     combined = combined[combined.index >= since]
 
-    # COMEX Silver in INR/kg
-    combined["comex_inr"] = combined["silver"] * TROY_OZ_TO_KG * combined["usdinr"]
-
-    # Floor timestamps to interval boundary so they align with the full index,
-    # then dedup in case flooring creates collisions.
+    # Floor timestamps to interval boundary, then dedup.
     _FREQ = {"1m": "1min", "5m": "5min", "1h": "1h", "1d": "1D"}
     freq = _FREQ.get(interval, "1D")
     combined.index = combined.index.floor(freq)
     combined = combined[~combined.index.duplicated(keep="last")]
 
-    # Reindex to the full requested time range so the x-axis always spans the
-    # complete window even when recent bars haven't been ingested yet.
-    # Floor `since` to the same interval boundary so full_index aligns with the data.
+    # Reindex to the full requested time range so x-axis always spans the window.
     since_floor = pd.Timestamp(since).floor(freq)
     full_index = pd.date_range(start=since_floor, end=now, freq=freq, tz="UTC")
     combined = combined.reindex(full_index)
+
+    # Fill strategy: closed hours → ffill last close; open hours gaps → keep null.
+    combined = _apply_market_fill(combined, interval)
+
+    # Recompute comex_inr after fills so it stays consistent.
+    combined["comex_inr"] = combined["silver"] * TROY_OZ_TO_KG * combined["usdinr"]
 
     fmt = DATE_FMT.get(interval, "%b %d")
     dates = [ts.strftime(fmt) for ts in combined.index]

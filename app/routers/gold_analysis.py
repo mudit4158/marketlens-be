@@ -71,6 +71,37 @@ class GoldAnalysisResponse(BaseModel):
     waterfall: list[WaterfallEntry]
 
 
+def _is_market_open(ts: pd.Timestamp) -> bool:
+    """Weekdays 03:30–18:00 UTC covers MCX (09:00–23:30 IST) and COMEX core hours."""
+    if ts.weekday() >= 5:  # Saturday or Sunday
+        return False
+    total_min = ts.hour * 60 + ts.minute
+    return 3 * 60 + 30 <= total_min < 18 * 60
+
+
+def _apply_market_fill(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """
+    Daily bars: ffill all NaN — fills weekends/holidays with last trading close.
+    Intraday bars: ffill only during market-closed slots; genuine intraday gaps stay null.
+    """
+    if interval == "1d":
+        return df.ffill()
+
+    is_open = pd.Series(
+        [_is_market_open(ts) for ts in df.index],
+        index=df.index,
+    )
+    was_nan = df.isna()
+    filled = df.ffill()
+
+    result = filled.copy()
+    for col in df.columns:
+        # Revert to NaN where market was open and data was genuinely absent
+        genuine_gap = was_nan[col] & is_open
+        result.loc[genuine_gap, col] = float("nan")
+    return result
+
+
 def _fetch_closes(db: Session, symbol: str, since: datetime, interval: str) -> pd.Series:
     inst = db.query(Instrument).filter(Instrument.symbol == symbol).one_or_none()
     if inst is None:
@@ -153,13 +184,10 @@ def gold_analysis(
     }).sort_index()
 
     # Forward-fill COMEX + FX for small intra-session gaps (liquid, continuous).
-    # Do NOT ffill mcx_gold — gaps should render as line breaks on the chart.
+    # Do NOT ffill mcx_gold here — market-hours gaps stay null; handled below.
     combined[["gold", "usdinr"]] = combined[["gold", "usdinr"]].ffill().bfill()
 
     combined = combined[combined.index >= since]
-
-    # COMEX expressed in INR per 10g (no duty — raw conversion for comparison)
-    combined["comex_inr"] = combined["gold"] * TROY_OZ_TO_10G * combined["usdinr"]
 
     # Floor timestamps to interval boundary so they align with the full index,
     # then dedup in case flooring creates collisions.
@@ -168,12 +196,18 @@ def gold_analysis(
     combined.index = combined.index.floor(freq)
     combined = combined[~combined.index.duplicated(keep="last")]
 
-    # Reindex to the full requested time range so the x-axis always spans the
-    # complete window even when recent bars haven't been ingested yet.
-    # Floor `since` to the same interval boundary so full_index aligns with the data.
+    # Reindex to the full requested time range so x-axis always spans the window.
     since_floor = pd.Timestamp(since).floor(freq)
     full_index = pd.date_range(start=since_floor, end=now, freq=freq, tz="UTC")
     combined = combined.reindex(full_index)
+
+    # Fill strategy:
+    #   Market closed (weekends, overnight) → ffill from last known closing value.
+    #   Market open but bar missing         → keep null (genuine intraday gap).
+    combined = _apply_market_fill(combined, interval)
+
+    # Recompute comex_inr after fills so it stays consistent with gold/usdinr.
+    combined["comex_inr"] = combined["gold"] * TROY_OZ_TO_10G * combined["usdinr"]
 
     fmt = DATE_FMT.get(interval, "%b %d")
     dates = [ts.strftime(fmt) for ts in combined.index]
