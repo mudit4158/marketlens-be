@@ -72,11 +72,20 @@ def silver_analysis(
     }).sort_index()
 
     combined[["silver", "usdinr"]] = combined[["silver", "usdinr"]].ffill().bfill()
-    combined["mcx_silver"] = combined["mcx_silver"].ffill()
+    # Do NOT ffill mcx_silver — gaps should render as line breaks on the chart.
     combined = combined[combined.index >= since]
 
     # COMEX Silver in INR/kg
     combined["comex_inr"] = combined["silver"] * TROY_OZ_TO_KG * combined["usdinr"]
+
+    # Reindex to the full requested time range so the x-axis always spans the
+    # complete window even when recent data hasn't been ingested yet.
+    _FREQ = {"1m": "1min", "5m": "5min", "1h": "1h", "1d": "1D"}
+    full_index = pd.date_range(
+        start=since, end=now,
+        freq=_FREQ.get(interval, "1D"), tz="UTC",
+    )
+    combined = combined.reindex(full_index)
 
     fmt = DATE_FMT.get(interval, "%b %d")
     dates = [ts.strftime(fmt) for ts in combined.index]

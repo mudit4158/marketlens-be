@@ -152,14 +152,23 @@ def gold_analysis(
         "mcx_gold": mcx_gold,
     }).sort_index()
 
-    # Forward-fill COMEX + FX (liquid, continuous); MCX may have gaps around expiry
+    # Forward-fill COMEX + FX for small intra-session gaps (liquid, continuous).
+    # Do NOT ffill mcx_gold — gaps should render as line breaks on the chart.
     combined[["gold", "usdinr"]] = combined[["gold", "usdinr"]].ffill().bfill()
-    combined["mcx_gold"] = combined["mcx_gold"].ffill()
 
     combined = combined[combined.index >= since]
 
     # COMEX expressed in INR per 10g (no duty — raw conversion for comparison)
     combined["comex_inr"] = combined["gold"] * TROY_OZ_TO_10G * combined["usdinr"]
+
+    # Reindex to the full requested time range so the x-axis always spans the
+    # complete window even when recent data hasn't been ingested yet.
+    _FREQ = {"1m": "1min", "5m": "5min", "1h": "1h", "1d": "1D"}
+    full_index = pd.date_range(
+        start=since, end=now,
+        freq=_FREQ.get(interval, "1D"), tz="UTC",
+    )
+    combined = combined.reindex(full_index)
 
     fmt = DATE_FMT.get(interval, "%b %d")
     dates = [ts.strftime(fmt) for ts in combined.index]
